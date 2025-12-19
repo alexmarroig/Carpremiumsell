@@ -1,0 +1,102 @@
+import datetime as dt
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String
+from sqlalchemy.orm import relationship
+
+from app.db.base import Base
+
+
+class SearchProfile(Base):
+    __tablename__ = "search_profiles"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    preferences = Column(JSON, nullable=False)
+    region = Column(String, nullable=False)
+
+
+class ListingSource(Base):
+    __tablename__ = "listing_sources"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    base_url = Column(String, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+
+
+class RawListing(Base):
+    __tablename__ = "raw_listings"
+
+    id = Column(Integer, primary_key=True)
+    source_id = Column(Integer, ForeignKey("listing_sources.id"), nullable=False)
+    external_id = Column(String, nullable=False)
+    raw_payload = Column(JSON, nullable=False)
+    fetched_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+    source = relationship("ListingSource")
+
+
+class NormalizedListing(Base):
+    __tablename__ = "normalized_listings"
+
+    id = Column(Integer, primary_key=True)
+    source_id = Column(Integer, ForeignKey("listing_sources.id"), nullable=False)
+    external_id = Column(String, nullable=False)
+    brand = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    trim = Column(String)
+    year = Column(Integer)
+    mileage_km = Column(Integer)
+    price_brl = Column(Float)
+    supplier_price_brl = Column(Float)
+    final_price_brl = Column(Float)
+    city = Column(String)
+    state = Column(String)
+    lat = Column(Float)
+    lng = Column(Float)
+    photos = Column(JSON, default=list)
+    url = Column(String)
+    seller_type = Column(String)
+    status = Column(String, default="active")
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+    source = relationship("ListingSource")
+
+
+class MarketStats(Base):
+    __tablename__ = "market_stats"
+
+    id = Column(Integer, primary_key=True)
+    region_key = Column(String, nullable=False)
+    brand = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    trim = Column(String)
+    year_range = Column(String)
+    median_price = Column(Float)
+    p25 = Column(Float)
+    p75 = Column(Float)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+
+class Recommendation(Base):
+    __tablename__ = "recommendations"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    query_text = Column(String, nullable=False)
+    chosen_listing_id = Column(Integer, ForeignKey("normalized_listings.id"))
+    rationale_text = Column(String, nullable=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+    listing = relationship("NormalizedListing")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    query_json = Column(JSON, nullable=False)
+    region_key = Column(String, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
