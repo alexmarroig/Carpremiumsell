@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.listing import NormalizedListing
 from app.schemas.listing import AxisBotReply
 from .ai_provider import AIProvider, MockProvider
-from .pricing import compute_opportunity_badge
+from .pricing import compute_regional_market_stats, detect_opportunity
 from .trust import TrustSignals, trust_badge
 
 
@@ -45,7 +45,10 @@ class AxisBotService:
         listing = self._pick_listing(db)
         badge = None
         if listing:
-            badge = compute_opportunity_badge(listing.final_price_brl or listing.price_brl or 0, None, None)
+            market = compute_regional_market_stats(
+                db, region_key=listing.state or "*", brand=listing.brand, model=listing.model
+            )
+            badge = detect_opportunity(listing.final_price_brl or listing.price_brl or 0, market)
             badge = badge or trust_badge(TrustSignals(seller_type=listing.seller_type, has_photos=bool(listing.photos)))
 
         return AxisBotReply(

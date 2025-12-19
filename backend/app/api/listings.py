@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.listing import MarketStats, NormalizedListing
 from app.schemas.listing import ListingOut, OpportunityResponse
-from app.services.pricing import compute_opportunity_badge
+from app.services.pricing import compute_opportunity_badge, compute_regional_market_stats
 from app.services.trust import TrustSignals, trust_badge
 
 router = APIRouter(prefix="/v1", tags=["listings"])
@@ -14,6 +14,8 @@ router = APIRouter(prefix="/v1", tags=["listings"])
 @router.get("/opportunities", response_model=OpportunityResponse)
 def opportunities(region: str, db: Session = Depends(get_db)) -> OpportunityResponse:
     stats = db.execute(select(MarketStats).where(MarketStats.region_key == region)).scalar_one_or_none()
+    if not stats:
+        stats = compute_regional_market_stats(db, region_key=region)
     listings = db.execute(select(NormalizedListing).limit(20)).scalars().all()
     items = []
     for listing in listings:

@@ -8,7 +8,7 @@ from app.connectors.example_marketplace import ExampleMarketplaceConnector
 from app.db.session import SessionLocal
 from app.models.listing import ListingSource, MarketStats, NormalizedListing, RawListing
 from app.services.normalization import normalize_listing_fields
-from app.services.pricing import apply_markup
+from app.services.pricing import apply_markup, compute_regional_market_stats
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,16 @@ def normalize_raw_listing(raw_id: int) -> None:
             logger.warning("Raw listing %s not found", raw_id)
             return
         data = normalize_listing_fields(raw.raw_payload)
+        external_id = data.get("external_id") or raw.external_id
+        if not external_id:
+            logger.warning("Raw listing %s missing external id", raw_id)
+            return
+
         price = data.get("price")
         final_price = apply_markup(price or 0)
         normalized = NormalizedListing(
             source_id=raw.source_id,
-            external_id=data["external_id"],
+            external_id=external_id,
             brand=data.get("brand"),
             model=data.get("model"),
             trim=data.get("trim"),
@@ -64,17 +69,28 @@ def normalize_raw_listing(raw_id: int) -> None:
 
 def recompute_market_stats(region_key: str, model_key: str) -> None:
     with SessionLocal() as db:
-        # Placeholder computation
-        stat = MarketStats(
-            region_key=region_key,
-            brand=model_key.split(" ")[0],
-            model=model_key,
-            median_price=100000,
-            p25=90000,
-            p75=110000,
-            updated_at=datetime.utcnow(),
-        )
-        db.add(stat)
+        stats = db.execute(
+            select(MarketStats).where(
+                MarketStats.region_key == region_key,
+                MarketStats.model == model_key,
+            )
+        ).scalars().first()
+
+        computed = compute_regional_market_stats(db, region_key=region_key, model=model_key)
+        if not computed:
+            logger.info("No prices found for %s in %s", model_key, region_key)
+            return
+
+        if not stats:
+            stats = MarketStats(
+                region_key=region_key, brand=model_key.split(" ")[0], model=model_key
+            )
+            db.add(stats)
+
+        stats.median_price = computed.median_price
+        stats.p25 = computed.p25
+        stats.p75 = computed.p75
+        stats.updated_at = datetime.utcnow()
         db.commit()
         logger.info("Recomputed market stats for %s", model_key)
 
