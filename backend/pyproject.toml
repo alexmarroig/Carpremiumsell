@@ -16,8 +16,6 @@ dependencies = [
     "rq",
     "pyjwt",
     "httpx",
-    "beautifulsoup4",
-    "playwright",
 ]
 
 [tool.black]

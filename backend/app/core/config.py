@@ -17,11 +17,6 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     rate_limit_per_minute: int = 60
 
-    mercadolivre_headless: bool = True
-    mercadolivre_rate_limit_per_minute: int = 20
-    mercadolivre_min_delay_seconds: float = 2.0
-    mercadolivre_max_delay_seconds: float = 5.0
-
     ai_provider: str = "mock"
     ai_api_key: str | None = None
 

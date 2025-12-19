@@ -2,7 +2,6 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, health, listings, search, sell
-from app.api.internal import router as internal_router
 from app.core.config import get_settings
 from app.core.logging_config import setup_logging
 from app.core.rate_limit import get_rate_limiter
@@ -33,4 +32,3 @@ app.include_router(auth.router)
 app.include_router(listings.router)
 app.include_router(search.router)
 app.include_router(sell.router)
-app.include_router(internal_router)

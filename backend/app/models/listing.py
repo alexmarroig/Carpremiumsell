@@ -56,7 +56,6 @@ class NormalizedListing(Base):
     photos = Column(JSON, default=list)
     url = Column(String)
     seller_type = Column(String)
-    trust_badge = Column(String)
     status = Column(String, default="active")
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)

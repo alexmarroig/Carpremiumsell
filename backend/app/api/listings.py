@@ -19,15 +19,8 @@ def opportunities(region: str, db: Session = Depends(get_db)) -> OpportunityResp
     listings = db.execute(select(NormalizedListing).limit(20)).scalars().all()
     items = []
     for listing in listings:
-        badge = listing.trust_badge  # type: ignore[attr-defined]
-        badge = badge or compute_opportunity_badge(
-            listing.final_price_brl or 0,
-            stats.median_price if stats else None,
-            stats.p25 if stats else None,
-        )
-        badge = badge or trust_badge(
-            TrustSignals(seller_type=listing.seller_type, has_photos=bool(listing.photos))
-        )
+        badge = compute_opportunity_badge(listing.final_price_brl or 0, stats.median_price if stats else None, stats.p25 if stats else None)
+        badge = badge or trust_badge(TrustSignals(seller_type=listing.seller_type, has_photos=bool(listing.photos)))
         listing.badge = badge  # type: ignore[attr-defined]
         items.append(listing)
     return OpportunityResponse(items=items, count=len(items))

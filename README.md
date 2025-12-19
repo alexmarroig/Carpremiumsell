@@ -23,11 +23,7 @@ curl -X POST http://localhost:8000/v1/search -H "Content-Type: application/json"
 - **FastAPI** app with JWT auth and rate limiting.
 - **PostgreSQL** + **Alembic** migrations for models (users, listings, stats, alerts, recommendations).
 - **Redis + RQ** workers for ingestion and analytics.
-- **Connectors** framework with safe example stub and Mercado Livre ingestion (public listings only).
+- **Connectors** framework with safe example stub.
 - **Axis Bot** service orchestrating AI provider and selecting a single recommendation.
-
-### Ingestion
-- Internal admin endpoint: `POST /internal/ingest/mercadolivre` with `{ "region_key": "sp-sao-paulo", "query_text": "corolla 2020", "limit": 30 }` enqueues a background job.
-- Connector honors robots/ToS, blocks heavy assets, applies rate limits via env (`MERCADOLIVRE_*`).
 
 See `docs/architecture.md`, `docs/api.md`, and `docs/runbook.md` for details.
