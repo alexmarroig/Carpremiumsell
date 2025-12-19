@@ -1,0 +1,32 @@
+[project]
+name = "axis-backend"
+version = "0.1.0"
+description = "AXIS premium car curation backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary",
+    "alembic",
+    "pydantic-settings",
+    "python-jose[cryptography]",
+    "bcrypt",
+    "redis",
+    "rq",
+    "pyjwt",
+    "httpx",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "B", "I"]
+ignore = ["E501"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

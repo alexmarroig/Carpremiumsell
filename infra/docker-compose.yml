@@ -1,0 +1,36 @@
+version: '3.9'
+services:
+  api:
+    build: ../backend
+    container_name: axis-api
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - SECRET_KEY=${SECRET_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: axis
+      POSTGRES_PASSWORD: axis
+      POSTGRES_DB: axis
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+  worker:
+    build: ../backend
+    command: rq worker axis
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - SECRET_KEY=${SECRET_KEY}
+    depends_on:
+      - api
+      - redis
