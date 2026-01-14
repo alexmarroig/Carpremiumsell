@@ -6,6 +6,8 @@ from html import unescape
 from random import uniform
 from typing import Iterable, List, Mapping, Optional
 
+from xml.etree import ElementTree as ET
+
 from app.core.config import get_settings
 from .base import BaseConnector
 
@@ -28,7 +30,39 @@ def _extract_external_id(url: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def _parse_html(html: str) -> ET.Element:
+    return ET.fromstring(html)
+
+
 def parse_search_results(html: str) -> List[str]:
+    root = _parse_html(html)
+    urls: List[str] = []
+    seen: set[str] = set()
+    for link in root.iter("a"):
+        href = link.attrib.get("href")
+        classes = link.attrib.get("class", "")
+        if not href or "ui-search-link" not in classes:
+            continue
+        if not LISTING_ID_PATTERN.search(href):
+            continue
+        clean = href.split("?", 1)[0]
+        if clean in seen:
+            continue
+        seen.add(clean)
+        urls.append(clean)
+    return urls
+
+
+def _get_text(node: Optional[ET.Element]) -> Optional[str]:
+    if node is None:
+        return None
+    text_parts = [node.text or ""]
+    for child in node:
+        text_parts.append(_get_text(child) or "")
+        if child.tail:
+            text_parts.append(child.tail)
+    text = "".join(text_parts).strip()
+    return text or None
     urls: List[str] = []
     anchor_pattern = re.compile(
         r"<a[^>]*class=\"[^\"]*ui-search-link[^\"]*\"[^>]*href=\"([^\"]+)\"",
@@ -57,10 +91,16 @@ def _parse_numeric(text: Optional[str]) -> Optional[float]:
         return None
 
 
-def _extract_city_state(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
-    breadcrumb = soup.select_one("ol.ui-pdp-breadcrumb")
-    if breadcrumb:
-        parts = [item.get_text(strip=True) for item in breadcrumb.select("li") if item.get_text(strip=True)]
+def _extract_city_state(root: ET.Element) -> tuple[Optional[str], Optional[str]]:
+    for breadcrumb in root.iter("ol"):
+        classes = breadcrumb.attrib.get("class", "")
+        if "ui-pdp-breadcrumb" not in classes:
+            continue
+        parts = [
+            _get_text(item)
+            for item in breadcrumb.iter("li")
+            if _get_text(item)
+        ]
         if parts:
             city_state = parts[-1].split(",")
             if len(city_state) == 2:
@@ -110,6 +150,14 @@ def _extract_seller_metadata(soup: BeautifulSoup) -> dict:
 
 
 def parse_listing_detail(html: str) -> Mapping:
+    root = _parse_html(html)
+    data: dict = {}
+
+    for script in root.iter("script"):
+        if script.attrib.get("type") != "application/ld+json" or not script.text:
+            continue
+        try:
+            payload = json.loads(script.text)
     data: dict = {}
 
     json_ld_match = re.search(
@@ -133,6 +181,36 @@ def parse_listing_detail(html: str) -> Mapping:
         except (ValueError, TypeError):
             logger.debug("Unable to parse JSON-LD for Mercado Livre listing")
 
+    if "title" not in data:
+        title_el = root.find(".//h1")
+        data["title"] = _get_text(title_el)
+
+    if "price" not in data:
+        for span in root.iter("span"):
+            classes = span.attrib.get("class", "")
+            if "andes-money-amount__fraction" in classes:
+                data["price"] = _parse_numeric(_get_text(span))
+                break
+
+    description_el = None
+    for p in root.iter("p"):
+        classes = p.attrib.get("class", "")
+        if "ui-pdp-description__content" in classes:
+            description_el = p
+            break
+    if description_el:
+        description = _get_text(description_el)
+        if description:
+            data["description"] = description
+
+    for row in root.iter("tr"):
+        classes = row.attrib.get("class", "")
+        if "ui-vpp-striped-specs__table-row" not in classes:
+            continue
+        th = row.find("th")
+        td = row.find("td")
+        label = _get_text(th)
+        value = _get_text(td)
     title_match = re.search(r"<h1[^>]*>([^<]+)", html, re.I)
     if title_match and not data.get("title"):
         data["title"] = unescape(title_match.group(1)).strip()
@@ -170,6 +248,26 @@ def parse_listing_detail(html: str) -> Mapping:
             year_val = _parse_numeric(value)
             data["year"] = int(year_val) if year_val else None
 
+    if "city" not in data or "state" not in data:
+        city, state = _extract_city_state(root)
+        if city:
+            data["city"] = city
+        if state:
+            data["state"] = state
+
+    images = data.get("photos") or []
+    if not images:
+        for img in root.iter("img"):
+            src = img.attrib.get("src")
+            if src:
+                images.append(src)
+    data["photos"] = images[:10]
+
+    if "url" not in data:
+        for link in root.iter("link"):
+            if link.attrib.get("rel") == "canonical" and link.attrib.get("href"):
+                data["url"] = link.attrib["href"]
+                break
     if "photos" not in data or not data["photos"]:
         images = re.findall(r"<img[^>]*src=\"([^\"]+)\"", html, re.I)
         data["photos"] = images[:10]
@@ -183,9 +281,9 @@ def parse_listing_detail(html: str) -> Mapping:
     if data.get("title"):
         parts = data["title"].split()
         if parts:
-            data["brand"] = parts[0].strip()
+            data.setdefault("brand", parts[0].strip())
             if len(parts) > 1:
-                data["model"] = " ".join(parts[1:3]).strip()
+                data.setdefault("model", " ".join(parts[1:3]).strip())
 
     data.update(_extract_seller_metadata(soup))
 

@@ -29,14 +29,8 @@ def _percentile(values: Sequence[float], percentile: float) -> Optional[float]:
         return None
     if len(values) == 1:
         return float(values[0])
-    k = (len(values) - 1) * percentile
-    f = int(k)
-    c = min(f + 1, len(values) - 1)
-    if f == c:
-        return float(values[int(k)])
-    d0 = values[f] * (c - k)
-    d1 = values[c] * (k - f)
-    return float(d0 + d1)
+    rank = max(1, int(len(values) * percentile + 0.9999)) - 1
+    return float(values[min(rank, len(values) - 1)])
 
 
 def compute_regional_market_stats(
