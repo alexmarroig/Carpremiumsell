@@ -15,14 +15,14 @@ class IngestRequest(BaseModel):
     limit: int | None = 30
 
 
-@router.post("/ingest/mercadolivre")
-def ingest_mercadolivre(request: IngestRequest):
+@router.post("/ingest/{source_name}")
+def ingest_source(source_name: str, request: IngestRequest):
     settings = get_settings()
     redis_conn = Redis.from_url(settings.redis_url)
-    queue = Queue("ingestion", connection=redis_conn)
+    queue = Queue("axis", connection=redis_conn)
     job = queue.enqueue(
         jobs.ingest_marketplace,
-        "mercadolivre",
+        source_name,
         request.region_key,
         request.query_text,
         request.limit or 30,

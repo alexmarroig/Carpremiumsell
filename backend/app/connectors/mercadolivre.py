@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+from html import unescape
 from random import uniform
 from typing import Iterable, List, Mapping, Optional
 
@@ -14,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 LISTING_ID_PATTERN = re.compile(r"MLB\d+")
+SELLER_ID_PATTERN = re.compile(r"sellerId\"?\s*:?\s*\"?([\w-]+)")
+MEDAL_PATTERN = re.compile(r"powerSellerStatus\"?\s*:?\s*\"?(\w+)")
+SCORE_PATTERN = re.compile(r"transparencyScore\"?\s*:?\s*([0-9\.]+)")
+CANCELLATIONS_PATTERN = re.compile(r"cancellations\"?\s*:?\s*([0-9]+)")
+COMPLETED_SALES_PATTERN = re.compile(r"completed\"?\s*:?\s*([0-9]+)")
+RESPONSE_TIME_PATTERN = re.compile(r"responseTime\"?\s*:?\s*([0-9\.]+)")
 
 
 def _extract_external_id(url: str) -> Optional[str]:
@@ -56,6 +63,20 @@ def _get_text(node: Optional[ET.Element]) -> Optional[str]:
             text_parts.append(child.tail)
     text = "".join(text_parts).strip()
     return text or None
+    urls: List[str] = []
+    anchor_pattern = re.compile(
+        r"<a[^>]*class=\"[^\"]*ui-search-link[^\"]*\"[^>]*href=\"([^\"]+)\"",
+        re.IGNORECASE,
+    )
+    for match in anchor_pattern.finditer(html):
+        href = match.group(1)
+        if href and LISTING_ID_PATTERN.search(href):
+            urls.append(href.split("?", 1)[0])
+    seen: List[str] = []
+    for url in urls:
+        if url not in seen:
+            seen.append(url)
+    return seen
 
 
 def _parse_numeric(text: Optional[str]) -> Optional[float]:
@@ -87,6 +108,47 @@ def _extract_city_state(root: ET.Element) -> tuple[Optional[str], Optional[str]]
     return None, None
 
 
+def _extract_seller_metadata(soup: BeautifulSoup) -> dict:
+    seller: dict = {"seller_origin": "mercadolivre"}
+    for script in soup.find_all("script"):
+        if not script.string:
+            continue
+        if "seller" not in script.string and "sellerId" not in script.string:
+            continue
+
+        if not seller.get("seller_id"):
+            seller_match = SELLER_ID_PATTERN.search(script.string)
+            if seller_match:
+                seller["seller_id"] = seller_match.group(1)
+
+        if not seller.get("seller_medal"):
+            medal_match = MEDAL_PATTERN.search(script.string)
+            if medal_match:
+                seller["seller_medal"] = medal_match.group(1)
+
+        if not seller.get("seller_score"):
+            score_match = SCORE_PATTERN.search(script.string)
+            if score_match:
+                seller["seller_score"] = float(score_match.group(1))
+
+        if seller.get("seller_cancellations") is None:
+            cancel_match = CANCELLATIONS_PATTERN.search(script.string)
+            if cancel_match:
+                seller["seller_cancellations"] = int(cancel_match.group(1))
+
+        if seller.get("seller_completed_sales") is None:
+            sales_match = COMPLETED_SALES_PATTERN.search(script.string)
+            if sales_match:
+                seller["seller_completed_sales"] = int(sales_match.group(1))
+
+        if seller.get("seller_response_time_hours") is None:
+            response_match = RESPONSE_TIME_PATTERN.search(script.string)
+            if response_match:
+                seller["seller_response_time_hours"] = float(response_match.group(1))
+
+    return seller
+
+
 def parse_listing_detail(html: str) -> Mapping:
     root = _parse_html(html)
     data: dict = {}
@@ -96,6 +158,14 @@ def parse_listing_detail(html: str) -> Mapping:
             continue
         try:
             payload = json.loads(script.text)
+    data: dict = {}
+
+    json_ld_match = re.search(
+        r"<script[^>]+type=\"application/ld\+json\"[^>]*>(.*?)</script>", html, re.S | re.I
+    )
+    if json_ld_match:
+        try:
+            payload = json.loads(unescape(json_ld_match.group(1)))
             data["title"] = payload.get("name") or payload.get("description")
             offer = payload.get("offers") or {}
             if isinstance(offer, dict):
@@ -141,6 +211,34 @@ def parse_listing_detail(html: str) -> Mapping:
         td = row.find("td")
         label = _get_text(th)
         value = _get_text(td)
+    title_match = re.search(r"<h1[^>]*>([^<]+)", html, re.I)
+    if title_match and not data.get("title"):
+        data["title"] = unescape(title_match.group(1)).strip()
+
+    price_match = re.search(
+        r"<span[^>]*class=\"[^\"]*andes-money-amount__fraction[^\"]*\"[^>]*>([^<]+)",
+        html,
+        re.I,
+    )
+    if price_match and "price" not in data:
+        data["price"] = _parse_numeric(unescape(price_match.group(1)))
+
+    description_match = re.search(
+        r"<p[^>]*class=\"[^\"]*ui-pdp-description__content[^\"]*\"[^>]*>([^<]+)",
+        html,
+        re.I,
+    )
+    if description_match:
+        data["description"] = unescape(description_match.group(1)).strip()
+
+    specs_pattern = re.compile(
+        r"<tr[^>]*class=\"[^\"]*ui-vpp-striped-specs__table-row[^\"]*\"[^>]*>\s*"
+        r"<th[^>]*>(.*?)</th>\s*<td[^>]*>(.*?)</td>\s*</tr>",
+        re.S | re.I,
+    )
+    for match in specs_pattern.finditer(html):
+        label = unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+        value = unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
         if not label or not value:
             continue
         label_lower = label.lower()
@@ -170,6 +268,15 @@ def parse_listing_detail(html: str) -> Mapping:
             if link.attrib.get("rel") == "canonical" and link.attrib.get("href"):
                 data["url"] = link.attrib["href"]
                 break
+    if "photos" not in data or not data["photos"]:
+        images = re.findall(r"<img[^>]*src=\"([^\"]+)\"", html, re.I)
+        data["photos"] = images[:10]
+
+    canonical_match = re.search(
+        r"<link[^>]+rel=\"canonical\"[^>]+href=\"([^\"]+)\"", html, re.I
+    )
+    if canonical_match:
+        data["url"] = canonical_match.group(1)
 
     if data.get("title"):
         parts = data["title"].split()
@@ -177,6 +284,8 @@ def parse_listing_detail(html: str) -> Mapping:
             data.setdefault("brand", parts[0].strip())
             if len(parts) > 1:
                 data.setdefault("model", " ".join(parts[1:3]).strip())
+
+    data.update(_extract_seller_metadata(soup))
 
     return data
 
