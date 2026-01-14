@@ -1,10 +1,15 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.connectors.base import BaseConnector
 from app.connectors.example_marketplace import ExampleMarketplaceConnector
+from app.connectors.mercadolivre import MercadoLivreConnector
+from app.connectors.olx import OlxConnector
 from app.db.session import SessionLocal
 from app.models.listing import ListingSource, MarketStats, NormalizedListing, RawListing
 from app.services.normalization import normalize_listing_fields
@@ -13,12 +18,53 @@ from app.services.pricing import apply_markup, compute_regional_market_stats
 logger = logging.getLogger(__name__)
 
 
-def ingest_source(source_name: str) -> None:
-    connector = ExampleMarketplaceConnector()
+@dataclass
+class ConnectorConfig:
+    base_url: str
+    factory: Callable[..., BaseConnector]
+
+
+def _example_factory(**_: Any) -> BaseConnector:
+    return ExampleMarketplaceConnector()
+
+
+def _mercado_livre_factory(region_key: str = "", query_text: str = "", limit: int = 30, **_: Any) -> BaseConnector:
+    return MercadoLivreConnector(region_key=region_key, query_text=query_text, limit=limit)
+
+
+def _olx_factory(**_: Any) -> BaseConnector:
+    return OlxConnector()
+
+
+CONNECTOR_REGISTRY: dict[str, ConnectorConfig] = {
+    "mercado_livre": ConnectorConfig(
+        base_url="https://carros.mercadolivre.com.br", factory=_mercado_livre_factory
+    ),
+    "mercadolivre": ConnectorConfig(
+        base_url="https://carros.mercadolivre.com.br", factory=_mercado_livre_factory
+    ),
+    "olx": ConnectorConfig(base_url="https://www.olx.com.br", factory=_olx_factory),
+}
+
+DEFAULT_CONNECTOR = ConnectorConfig(base_url="https://example.com", factory=_example_factory)
+
+
+def get_connector_config(source_name: str) -> ConnectorConfig:
+    return CONNECTOR_REGISTRY.get(source_name, DEFAULT_CONNECTOR)
+
+
+def ingest_source(source_name: str, region_key: str = "", query_text: str | None = None, limit: int = 30) -> None:
+    config = get_connector_config(source_name)
+    connector = config.factory(region_key=region_key, query_text=query_text or "", limit=limit)
     with SessionLocal() as db:
         source = db.execute(select(ListingSource).where(ListingSource.name == source_name)).scalars().first()
         if not source:
-            source = ListingSource(name=source_name, base_url="https://example.com", enabled=True)
+            source = ListingSource(name=source_name, base_url=config.base_url, enabled=True)
+            db.add(source)
+            db.commit()
+            db.refresh(source)
+        elif source.base_url != config.base_url:
+            source.base_url = config.base_url
             db.add(source)
             db.commit()
             db.refresh(source)
@@ -28,6 +74,10 @@ def ingest_source(source_name: str) -> None:
             db.add(raw)
         db.commit()
         logger.info("Ingested raw listings for %s", source_name)
+
+
+def ingest_marketplace(source_name: str, region_key: str, query_text: str = "", limit: int = 30) -> None:
+    ingest_source(source_name=source_name, region_key=region_key, query_text=query_text, limit=limit)
 
 
 def normalize_raw_listing(raw_id: int) -> None:
