@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 
 COMMON_BRANDS = {
@@ -8,16 +8,20 @@ COMMON_BRANDS = {
 }
 
 
-def normalize_brand(raw_brand: str) -> str:
+def normalize_brand(raw_brand: Optional[str]) -> Optional[str]:
+    if not raw_brand:
+        return None
     key = raw_brand.strip().lower()
     return COMMON_BRANDS.get(key, raw_brand.title())
 
 
 def normalize_listing_fields(raw: Dict) -> Dict:
+    brand = normalize_brand(raw.get("brand"))
+    model = raw.get("model")
     return {
         "external_id": raw.get("id") or raw.get("external_id"),
-        "brand": normalize_brand(raw.get("brand", "")),
-        "model": raw.get("model", "").title(),
+        "brand": brand,
+        "model": model.title() if isinstance(model, str) else model,
         "trim": raw.get("trim"),
         "year": int(raw["year"]) if raw.get("year") else None,
         "mileage_km": raw.get("mileage_km"),
@@ -27,4 +31,6 @@ def normalize_listing_fields(raw: Dict) -> Dict:
         "seller_type": raw.get("seller_type", "private"),
         "photos": raw.get("photos", []),
         "url": raw.get("url"),
+        "seller_id": raw.get("seller_id"),
+        "seller_reputation": raw.get("seller_reputation"),
     }
