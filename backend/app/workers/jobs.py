@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from app.connectors.example_marketplace import ExampleMarketplaceConnector
 from app.connectors.mercado_livre import MercadoLivreConnector
 from app.db.session import SessionLocal
-from app.models.listing import ListingSource, MarketStats, NormalizedListing, RawListing
+from app.models.listing import ListingSource, MarketStats, NormalizedListing, RawListing, Seller
 from app.services.normalization import normalize_listing_fields
 from app.services.pricing import apply_markup, compute_regional_market_stats
+from app.services.seller_stats import consolidate_seller_stats
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,31 @@ def normalize_raw_listing(raw_id: int) -> None:
             return
 
         price = data.get("price")
+        seller_origin = data.get("seller_origin") or (raw.source.name if raw and raw.source else None)
+
+        seller = None
+        seller_external_id = data.get("seller_id")
+        if seller_external_id:
+            seller = db.execute(
+                select(Seller).where(
+                    Seller.external_id == seller_external_id,
+                    Seller.origin == (seller_origin or "unknown"),
+                )
+            ).scalars().first()
+            if not seller:
+                seller = Seller(
+                    external_id=seller_external_id,
+                    origin=seller_origin or "unknown",
+                    source_id=raw.source_id if raw else None,
+                )
+                db.add(seller)
+
+            seller.reputation_medal = data.get("seller_medal") or seller.reputation_medal
+            seller.reputation_score = data.get("seller_score") or seller.reputation_score
+            seller.cancellations = data.get("seller_cancellations") or seller.cancellations
+            seller.response_time_hours = data.get("seller_response_time_hours") or seller.response_time_hours
+            seller.completed_sales = data.get("seller_completed_sales") or seller.completed_sales
+
         final_price = apply_markup(price or 0)
         normalized = NormalizedListing(
             source_id=raw.source_id,
@@ -74,6 +100,8 @@ def normalize_raw_listing(raw_id: int) -> None:
         )
         db.add(normalized)
         db.commit()
+        if seller:
+            consolidate_seller_stats(db)
         logger.info("Normalized listing %s", raw_id)
 
 
@@ -109,3 +137,9 @@ def daily_opportunities(region_key: str) -> None:
     with SessionLocal() as db:
         listings = db.execute(select(NormalizedListing).where(NormalizedListing.state == region_key)).scalars().all()
         logger.info("Found %s listings for opportunities", len(listings))
+
+
+def refresh_seller_statistics() -> None:
+    with SessionLocal() as db:
+        consolidate_seller_stats(db)
+        logger.info("Consolidated seller stats")
