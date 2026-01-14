@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.connectors.example_marketplace import ExampleMarketplaceConnector
+from app.connectors.mercado_livre import MercadoLivreConnector
 from app.db.session import SessionLocal
 from app.models.listing import ListingSource, MarketStats, NormalizedListing, RawListing, Seller
 from app.services.normalization import normalize_listing_fields
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def ingest_source(source_name: str) -> None:
-    connector = ExampleMarketplaceConnector()
+    connector = _get_connector(source_name)
     with SessionLocal() as db:
         source = db.execute(select(ListingSource).where(ListingSource.name == source_name)).scalars().first()
         if not source:
@@ -29,6 +30,13 @@ def ingest_source(source_name: str) -> None:
             db.add(raw)
         db.commit()
         logger.info("Ingested raw listings for %s", source_name)
+
+
+def _get_connector(source_name: str):
+    normalized_name = source_name.lower().replace(" ", "_")
+    if normalized_name in {"mercado_livre", "mercadolivre"}:
+        return MercadoLivreConnector(region_key="SP", query_text="carros")
+    return ExampleMarketplaceConnector()
 
 
 def normalize_raw_listing(raw_id: int) -> None:
@@ -86,7 +94,8 @@ def normalize_raw_listing(raw_id: int) -> None:
             photos=data.get("photos"),
             url=data.get("url"),
             seller_type=data.get("seller_type"),
-            seller_id=seller.id if seller else None,
+            seller_id=data.get("seller_id"),
+            seller_reputation=data.get("seller_reputation"),
             status="active",
         )
         db.add(normalized)
