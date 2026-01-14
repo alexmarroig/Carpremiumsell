@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     ai_provider: str = "mock"
     ai_api_key: str | None = None
 
+    mercadolivre_rate_limit_per_minute: int = 10
+    mercadolivre_headless: bool = True
+    mercadolivre_min_delay_seconds: int = 1
+    mercadolivre_max_delay_seconds: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:
