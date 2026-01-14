@@ -17,6 +17,7 @@ class ListingBase(BaseModel):
     photos: List[str] = []
     url: Optional[str] = None
     seller_type: Optional[str] = None
+    seller_id: Optional[int] = None
     badge: Optional[str] = None
 
 
@@ -33,6 +34,23 @@ class ListingOut(ListingBase):
 class OpportunityResponse(BaseModel):
     items: List[ListingOut]
     count: int
+
+
+class SellerStatsOut(BaseModel):
+    seller_id: int
+    origin: str
+    reputation_medal: Optional[str] = None
+    reputation_score: Optional[float] = None
+    cancellations: Optional[int] = None
+    response_time_hours: Optional[float] = None
+    completed_sales: Optional[int] = None
+    average_price_brl: Optional[float] = None
+    listings_count: Optional[int] = None
+    problem_rate: Optional[float] = None
+    reliability_score: Optional[float] = None
+
+    class Config:
+        from_attributes = True
 
 
 class SearchRequest(BaseModel):

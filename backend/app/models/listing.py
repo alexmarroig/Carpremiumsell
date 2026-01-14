@@ -1,5 +1,5 @@
 import datetime as dt
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -56,11 +56,13 @@ class NormalizedListing(Base):
     photos = Column(JSON, default=list)
     url = Column(String)
     seller_type = Column(String)
+    seller_id = Column(Integer, ForeignKey("sellers.id"))
     status = Column(String, default="active")
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 
     source = relationship("ListingSource")
+    seller = relationship("Seller", back_populates="listings")
 
 
 class MarketStats(Base):
@@ -89,6 +91,40 @@ class Recommendation(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     listing = relationship("NormalizedListing")
+
+
+class Seller(Base):
+    __tablename__ = "sellers"
+    __table_args__ = (UniqueConstraint("origin", "external_id", name="uq_seller_origin_external"),)
+
+    id = Column(Integer, primary_key=True)
+    source_id = Column(Integer, ForeignKey("listing_sources.id"), nullable=True)
+    origin = Column(String, nullable=False)
+    external_id = Column(String, nullable=False)
+    reputation_medal = Column(String)
+    reputation_score = Column(Float)
+    cancellations = Column(Integer)
+    response_time_hours = Column(Float)
+    completed_sales = Column(Integer)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+    listings = relationship("NormalizedListing", back_populates="seller")
+
+
+class SellerStats(Base):
+    __tablename__ = "seller_stats"
+
+    id = Column(Integer, primary_key=True)
+    seller_id = Column(Integer, ForeignKey("sellers.id"), nullable=False, unique=True)
+    average_price_brl = Column(Float)
+    listings_count = Column(Integer)
+    completed_sales = Column(Integer)
+    problem_rate = Column(Float)
+    reliability_score = Column(Float)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+    seller = relationship("Seller")
 
 
 class Alert(Base):

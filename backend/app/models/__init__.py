@@ -6,6 +6,8 @@ from .listing import (
     NormalizedListing,
     RawListing,
     Recommendation,
+    Seller,
+    SellerStats,
     SearchProfile,
 )
 
@@ -17,5 +19,7 @@ __all__ = [
     "NormalizedListing",
     "MarketStats",
     "Recommendation",
+    "Seller",
+    "SellerStats",
     "Alert",
 ]
