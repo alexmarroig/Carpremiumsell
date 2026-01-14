@@ -22,7 +22,7 @@ def trust_badge(signals: TrustSignals) -> Optional[str]:
     if signals.has_photos:
         score += 1
     if signals.price_deviation is not None and signals.price_deviation < -0.2:
-        score -= 1
+        score += 1
     if signals.listing_age_hours is not None and signals.listing_age_hours < 6:
         score -= 1
 

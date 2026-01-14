@@ -2,11 +2,11 @@ import json
 import logging
 import re
 import time
+from html import unescape
 from random import uniform
 from typing import Iterable, List, Mapping, Optional
 
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from xml.etree import ElementTree as ET
 
 from app.core.config import get_settings
 from .base import BaseConnector
@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 LISTING_ID_PATTERN = re.compile(r"MLB\d+")
+SELLER_ID_PATTERN = re.compile(r"sellerId\"?\s*:?\s*\"?([\w-]+)")
+MEDAL_PATTERN = re.compile(r"powerSellerStatus\"?\s*:?\s*\"?(\w+)")
+SCORE_PATTERN = re.compile(r"transparencyScore\"?\s*:?\s*([0-9\.]+)")
+CANCELLATIONS_PATTERN = re.compile(r"cancellations\"?\s*:?\s*([0-9]+)")
+COMPLETED_SALES_PATTERN = re.compile(r"completed\"?\s*:?\s*([0-9]+)")
+RESPONSE_TIME_PATTERN = re.compile(r"responseTime\"?\s*:?\s*([0-9\.]+)")
 
 
 def _extract_external_id(url: str) -> Optional[str]:
@@ -24,22 +30,53 @@ def _extract_external_id(url: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def _parse_html(html: str) -> ET.Element:
+    return ET.fromstring(html)
+
+
 def parse_search_results(html: str) -> List[str]:
-    soup = BeautifulSoup(html, "html.parser")
+    root = _parse_html(html)
     urls: List[str] = []
-    for link in soup.select("a.ui-search-link"):  # resilient top-level anchors in listings
-        href = link.get("href")
+    seen: set[str] = set()
+    for link in root.iter("a"):
+        href = link.attrib.get("href")
+        classes = link.attrib.get("class", "")
+        if not href or "ui-search-link" not in classes:
+            continue
+        if not LISTING_ID_PATTERN.search(href):
+            continue
+        clean = href.split("?", 1)[0]
+        if clean in seen:
+            continue
+        seen.add(clean)
+        urls.append(clean)
+    return urls
+
+
+def _get_text(node: Optional[ET.Element]) -> Optional[str]:
+    if node is None:
+        return None
+    text_parts = [node.text or ""]
+    for child in node:
+        text_parts.append(_get_text(child) or "")
+        if child.tail:
+            text_parts.append(child.tail)
+    text = "".join(text_parts).strip()
+    return text or None
+    urls: List[str] = []
+    anchor_pattern = re.compile(
+        r"<a[^>]*class=\"[^\"]*ui-search-link[^\"]*\"[^>]*href=\"([^\"]+)\"",
+        re.IGNORECASE,
+    )
+    for match in anchor_pattern.finditer(html):
+        href = match.group(1)
         if href and LISTING_ID_PATTERN.search(href):
             urls.append(href.split("?", 1)[0])
-    return list(dict.fromkeys(urls))  # preserve order, drop duplicates
-
-
-def _extract_text(soup: BeautifulSoup, selector: str) -> Optional[str]:
-    node = soup.select_one(selector)
-    if not node:
-        return None
-    text = node.get_text(strip=True)
-    return text or None
+    seen: List[str] = []
+    for url in urls:
+        if url not in seen:
+            seen.append(url)
+    return seen
 
 
 def _parse_numeric(text: Optional[str]) -> Optional[float]:
@@ -54,10 +91,16 @@ def _parse_numeric(text: Optional[str]) -> Optional[float]:
         return None
 
 
-def _extract_city_state(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
-    breadcrumb = soup.select_one("ol.ui-pdp-breadcrumb")
-    if breadcrumb:
-        parts = [item.get_text(strip=True) for item in breadcrumb.select("li") if item.get_text(strip=True)]
+def _extract_city_state(root: ET.Element) -> tuple[Optional[str], Optional[str]]:
+    for breadcrumb in root.iter("ol"):
+        classes = breadcrumb.attrib.get("class", "")
+        if "ui-pdp-breadcrumb" not in classes:
+            continue
+        parts = [
+            _get_text(item)
+            for item in breadcrumb.iter("li")
+            if _get_text(item)
+        ]
         if parts:
             city_state = parts[-1].split(",")
             if len(city_state) == 2:
@@ -65,14 +108,64 @@ def _extract_city_state(soup: BeautifulSoup) -> tuple[Optional[str], Optional[st
     return None, None
 
 
+def _extract_seller_metadata(soup: BeautifulSoup) -> dict:
+    seller: dict = {"seller_origin": "mercadolivre"}
+    for script in soup.find_all("script"):
+        if not script.string:
+            continue
+        if "seller" not in script.string and "sellerId" not in script.string:
+            continue
+
+        if not seller.get("seller_id"):
+            seller_match = SELLER_ID_PATTERN.search(script.string)
+            if seller_match:
+                seller["seller_id"] = seller_match.group(1)
+
+        if not seller.get("seller_medal"):
+            medal_match = MEDAL_PATTERN.search(script.string)
+            if medal_match:
+                seller["seller_medal"] = medal_match.group(1)
+
+        if not seller.get("seller_score"):
+            score_match = SCORE_PATTERN.search(script.string)
+            if score_match:
+                seller["seller_score"] = float(score_match.group(1))
+
+        if seller.get("seller_cancellations") is None:
+            cancel_match = CANCELLATIONS_PATTERN.search(script.string)
+            if cancel_match:
+                seller["seller_cancellations"] = int(cancel_match.group(1))
+
+        if seller.get("seller_completed_sales") is None:
+            sales_match = COMPLETED_SALES_PATTERN.search(script.string)
+            if sales_match:
+                seller["seller_completed_sales"] = int(sales_match.group(1))
+
+        if seller.get("seller_response_time_hours") is None:
+            response_match = RESPONSE_TIME_PATTERN.search(script.string)
+            if response_match:
+                seller["seller_response_time_hours"] = float(response_match.group(1))
+
+    return seller
+
+
 def parse_listing_detail(html: str) -> Mapping:
-    soup = BeautifulSoup(html, "html.parser")
+    root = _parse_html(html)
     data: dict = {}
 
-    json_ld = soup.find("script", type="application/ld+json")
-    if json_ld and json_ld.string:
+    for script in root.iter("script"):
+        if script.attrib.get("type") != "application/ld+json" or not script.text:
+            continue
         try:
-            payload = json.loads(json_ld.string)
+            payload = json.loads(script.text)
+    data: dict = {}
+
+    json_ld_match = re.search(
+        r"<script[^>]+type=\"application/ld\+json\"[^>]*>(.*?)</script>", html, re.S | re.I
+    )
+    if json_ld_match:
+        try:
+            payload = json.loads(unescape(json_ld_match.group(1)))
             data["title"] = payload.get("name") or payload.get("description")
             offer = payload.get("offers") or {}
             if isinstance(offer, dict):
@@ -88,16 +181,64 @@ def parse_listing_detail(html: str) -> Mapping:
         except (ValueError, TypeError):
             logger.debug("Unable to parse JSON-LD for Mercado Livre listing")
 
-    data.setdefault("title", _extract_text(soup, "h1"))
-    data.setdefault("price", _parse_numeric(_extract_text(soup, "span.andes-money-amount__fraction")))
-    description = _extract_text(soup, "p.ui-pdp-description__content")
-    if description:
-        data["description"] = description
+    if "title" not in data:
+        title_el = root.find(".//h1")
+        data["title"] = _get_text(title_el)
 
-    specs = soup.select("tr.ui-vpp-striped-specs__table-row")
-    for row in specs:
-        label = _extract_text(row, "th")
-        value = _extract_text(row, "td")
+    if "price" not in data:
+        for span in root.iter("span"):
+            classes = span.attrib.get("class", "")
+            if "andes-money-amount__fraction" in classes:
+                data["price"] = _parse_numeric(_get_text(span))
+                break
+
+    description_el = None
+    for p in root.iter("p"):
+        classes = p.attrib.get("class", "")
+        if "ui-pdp-description__content" in classes:
+            description_el = p
+            break
+    if description_el:
+        description = _get_text(description_el)
+        if description:
+            data["description"] = description
+
+    for row in root.iter("tr"):
+        classes = row.attrib.get("class", "")
+        if "ui-vpp-striped-specs__table-row" not in classes:
+            continue
+        th = row.find("th")
+        td = row.find("td")
+        label = _get_text(th)
+        value = _get_text(td)
+    title_match = re.search(r"<h1[^>]*>([^<]+)", html, re.I)
+    if title_match and not data.get("title"):
+        data["title"] = unescape(title_match.group(1)).strip()
+
+    price_match = re.search(
+        r"<span[^>]*class=\"[^\"]*andes-money-amount__fraction[^\"]*\"[^>]*>([^<]+)",
+        html,
+        re.I,
+    )
+    if price_match and "price" not in data:
+        data["price"] = _parse_numeric(unescape(price_match.group(1)))
+
+    description_match = re.search(
+        r"<p[^>]*class=\"[^\"]*ui-pdp-description__content[^\"]*\"[^>]*>([^<]+)",
+        html,
+        re.I,
+    )
+    if description_match:
+        data["description"] = unescape(description_match.group(1)).strip()
+
+    specs_pattern = re.compile(
+        r"<tr[^>]*class=\"[^\"]*ui-vpp-striped-specs__table-row[^\"]*\"[^>]*>\s*"
+        r"<th[^>]*>(.*?)</th>\s*<td[^>]*>(.*?)</td>\s*</tr>",
+        re.S | re.I,
+    )
+    for match in specs_pattern.finditer(html):
+        label = unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+        value = unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
         if not label or not value:
             continue
         label_lower = label.lower()
@@ -108,7 +249,7 @@ def parse_listing_detail(html: str) -> Mapping:
             data["year"] = int(year_val) if year_val else None
 
     if "city" not in data or "state" not in data:
-        city, state = _extract_city_state(soup)
+        city, state = _extract_city_state(root)
         if city:
             data["city"] = city
         if state:
@@ -116,19 +257,35 @@ def parse_listing_detail(html: str) -> Mapping:
 
     images = data.get("photos") or []
     if not images:
-        images = [img.get("src") for img in soup.select("figure img") if img.get("src")]
+        for img in root.iter("img"):
+            src = img.attrib.get("src")
+            if src:
+                images.append(src)
     data["photos"] = images[:10]
 
-    url = soup.find("link", rel="canonical")
-    if url and url.get("href"):
-        data["url"] = url.get("href")
+    if "url" not in data:
+        for link in root.iter("link"):
+            if link.attrib.get("rel") == "canonical" and link.attrib.get("href"):
+                data["url"] = link.attrib["href"]
+                break
+    if "photos" not in data or not data["photos"]:
+        images = re.findall(r"<img[^>]*src=\"([^\"]+)\"", html, re.I)
+        data["photos"] = images[:10]
+
+    canonical_match = re.search(
+        r"<link[^>]+rel=\"canonical\"[^>]+href=\"([^\"]+)\"", html, re.I
+    )
+    if canonical_match:
+        data["url"] = canonical_match.group(1)
 
     if data.get("title"):
         parts = data["title"].split()
         if parts:
-            data["brand"] = parts[0].strip()
+            data.setdefault("brand", parts[0].strip())
             if len(parts) > 1:
-                data["model"] = " ".join(parts[1:3]).strip()
+                data.setdefault("model", " ".join(parts[1:3]).strip())
+
+    data.update(_extract_seller_metadata(soup))
 
     return data
 
@@ -161,6 +318,8 @@ class MercadoLivreConnector(BaseConnector):
         return "/".join(filter(None, parts))
 
     def fetch_listings(self) -> Iterable[Mapping]:
+        from playwright.sync_api import sync_playwright
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
             context = browser.new_context()

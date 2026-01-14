@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.models.listing import MarketStats, NormalizedListing
-from app.schemas.listing import ListingOut, OpportunityResponse
+from app.schemas.listing import ListingOut, OpportunityResponse, SellerStatsOut
 from app.services.pricing import compute_opportunity_badge, compute_regional_market_stats
+from app.services.seller_stats import top_trusted_sellers
 from app.services.trust import TrustSignals, trust_badge
 
 router = APIRouter(prefix="/v1", tags=["listings"])
@@ -24,6 +25,34 @@ def opportunities(region: str, db: Session = Depends(get_db)) -> OpportunityResp
         listing.badge = badge  # type: ignore[attr-defined]
         items.append(listing)
     return OpportunityResponse(items=items, count=len(items))
+
+
+@router.get("/trusted-sellers", response_model=list[SellerStatsOut])
+def trusted_sellers(
+    limit: int = Query(10, ge=1, le=50),
+    origin: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[SellerStatsOut]:
+    stats = top_trusted_sellers(db, limit=limit, origin=origin)
+    response: list[SellerStatsOut] = []
+    for stat in stats:
+        seller = getattr(stat, "seller", None)
+        response.append(
+            SellerStatsOut(
+                seller_id=stat.seller_id,
+                origin=seller.origin if seller else "",
+                reputation_medal=seller.reputation_medal if seller else None,
+                reputation_score=seller.reputation_score if seller else None,
+                cancellations=seller.cancellations if seller else None,
+                response_time_hours=seller.response_time_hours if seller else None,
+                completed_sales=seller.completed_sales if seller else stat.completed_sales,
+                average_price_brl=stat.average_price_brl,
+                listings_count=stat.listings_count,
+                problem_rate=stat.problem_rate,
+                reliability_score=stat.reliability_score,
+            )
+        )
+    return response
 
 
 @router.get("/listings/{listing_id}", response_model=ListingOut)
