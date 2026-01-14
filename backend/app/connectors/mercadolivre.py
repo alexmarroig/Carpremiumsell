@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 LISTING_ID_PATTERN = re.compile(r"MLB\d+")
+SELLER_ID_PATTERN = re.compile(r"sellerId\"?\s*:?\s*\"?([\w-]+)")
+MEDAL_PATTERN = re.compile(r"powerSellerStatus\"?\s*:?\s*\"?(\w+)")
+SCORE_PATTERN = re.compile(r"transparencyScore\"?\s*:?\s*([0-9\.]+)")
+CANCELLATIONS_PATTERN = re.compile(r"cancellations\"?\s*:?\s*([0-9]+)")
+COMPLETED_SALES_PATTERN = re.compile(r"completed\"?\s*:?\s*([0-9]+)")
+RESPONSE_TIME_PATTERN = re.compile(r"responseTime\"?\s*:?\s*([0-9\.]+)")
 
 
 def _extract_external_id(url: str) -> Optional[str]:
@@ -49,6 +55,58 @@ def _parse_numeric(text: Optional[str]) -> Optional[float]:
         return float(digits[0])
     except ValueError:
         return None
+
+
+def _extract_city_state(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
+    breadcrumb = soup.select_one("ol.ui-pdp-breadcrumb")
+    if breadcrumb:
+        parts = [item.get_text(strip=True) for item in breadcrumb.select("li") if item.get_text(strip=True)]
+        if parts:
+            city_state = parts[-1].split(",")
+            if len(city_state) == 2:
+                return city_state[0].strip(), city_state[1].strip()
+    return None, None
+
+
+def _extract_seller_metadata(soup: BeautifulSoup) -> dict:
+    seller: dict = {"seller_origin": "mercadolivre"}
+    for script in soup.find_all("script"):
+        if not script.string:
+            continue
+        if "seller" not in script.string and "sellerId" not in script.string:
+            continue
+
+        if not seller.get("seller_id"):
+            seller_match = SELLER_ID_PATTERN.search(script.string)
+            if seller_match:
+                seller["seller_id"] = seller_match.group(1)
+
+        if not seller.get("seller_medal"):
+            medal_match = MEDAL_PATTERN.search(script.string)
+            if medal_match:
+                seller["seller_medal"] = medal_match.group(1)
+
+        if not seller.get("seller_score"):
+            score_match = SCORE_PATTERN.search(script.string)
+            if score_match:
+                seller["seller_score"] = float(score_match.group(1))
+
+        if seller.get("seller_cancellations") is None:
+            cancel_match = CANCELLATIONS_PATTERN.search(script.string)
+            if cancel_match:
+                seller["seller_cancellations"] = int(cancel_match.group(1))
+
+        if seller.get("seller_completed_sales") is None:
+            sales_match = COMPLETED_SALES_PATTERN.search(script.string)
+            if sales_match:
+                seller["seller_completed_sales"] = int(sales_match.group(1))
+
+        if seller.get("seller_response_time_hours") is None:
+            response_match = RESPONSE_TIME_PATTERN.search(script.string)
+            if response_match:
+                seller["seller_response_time_hours"] = float(response_match.group(1))
+
+    return seller
 
 
 def parse_listing_detail(html: str) -> Mapping:
@@ -128,6 +186,8 @@ def parse_listing_detail(html: str) -> Mapping:
             data["brand"] = parts[0].strip()
             if len(parts) > 1:
                 data["model"] = " ".join(parts[1:3]).strip()
+
+    data.update(_extract_seller_metadata(soup))
 
     return data
 
