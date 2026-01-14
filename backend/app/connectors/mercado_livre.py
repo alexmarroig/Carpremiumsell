@@ -1,186 +1,131 @@
-import json
-import re
-from html import unescape
-from typing import Iterable, List, Mapping, Optional, Tuple
+import logging
+from typing import Iterable, Mapping, Optional
 
 import httpx
 
-from .base import BaseConnector
+from app.connectors.base import BaseConnector
 
-
-LISTING_ID_PATTERN = re.compile(r"MLB\d+", re.IGNORECASE)
-PRICE_PATTERN = re.compile(r"[\d\.]+")
-KM_PATTERN = re.compile(r"([\d\.]+)\s*km", re.IGNORECASE)
-YEAR_PATTERN = re.compile(r"\b(20\d{2}|19\d{2})\b")
-
-
-def _parse_number(text: Optional[str]) -> Optional[int]:
-    if not text:
-        return None
-    digits = PRICE_PATTERN.findall(text.replace("\xa0", " "))
-    if not digits:
-        return None
-    try:
-        return int(digits[0].replace(".", ""))
-    except ValueError:
-        return None
-
-
-def _extract_city_state(raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    if not raw:
-        return None, None
-    parts = [part.strip() for part in raw.split(",") if part.strip()]
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return None, None
-
-
-def _find_all_urls(html: str) -> List[str]:
-    urls: List[str] = []
-    for match in re.finditer(r'<a[^>]+class="[^"]*ui-search-result__content[^"]*"[^>]+href="([^"]+)"', html, re.IGNORECASE):
-        href = unescape(match.group(1))
-        if LISTING_ID_PATTERN.search(href):
-            urls.append(href.split("?", 1)[0])
-    return list(dict.fromkeys(urls))
-
-
-def parse_search_page(html: str) -> Tuple[List[str], Optional[str]]:
-    urls = _find_all_urls(html)
-    next_match = re.search(r'<a[^>]+rel="next"[^>]+href="([^"]+)"', html, re.IGNORECASE)
-    next_url = unescape(next_match.group(1)) if next_match else None
-    return urls, next_url
-
-
-def _extract_photos(html: str) -> List[str]:
-    photos = []
-    for match in re.finditer(r'<img[^>]+(?:data-src|src)="([^"]+)"', html, re.IGNORECASE):
-        photos.append(unescape(match.group(1)))
-    return list(dict.fromkeys(photos))
-
-
-def _extract_seller_feedback(html: str) -> Mapping:
-    script_match = re.search(r'<script[^>]+id="seller-reputation"[^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL)
-    if script_match:
-        try:
-            data = json.loads(script_match.group(1))
-            return {
-                "medal": data.get("medal"),
-                "cancellation_rate": data.get("cancellation_rate"),
-                "response_time": data.get("response_time"),
-                "sales": data.get("sales"),
-            }
-        except json.JSONDecodeError:
-            pass
-    return {}
-
-
-def parse_listing(payload: Mapping) -> Mapping:
-    html = payload.get("html") or ""
-    url = payload.get("url")
-
-    parsed: dict = {}
-    id_match = re.search(r'data-product-id="(MLB\d+)"', html, re.IGNORECASE)
-    if id_match:
-        parsed["id"] = id_match.group(1)
-
-    title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL)
-    if title_match:
-        parsed["title"] = unescape(re.sub(r"<[^>]+>", "", title_match.group(1))).strip()
-
-    price_match = re.search(r'class="andes-money-amount__fraction"[^>]*>(.*?)</', html, re.IGNORECASE | re.DOTALL)
-    parsed["price"] = _parse_number(price_match.group(1) if price_match else None)
-
-    specs_text = " ".join(match.group(1) for match in re.finditer(r"<li[^>]*>(.*?)</li>", html, re.IGNORECASE | re.DOTALL))
-    km_match = KM_PATTERN.search(specs_text)
-    if km_match:
-        parsed["mileage_km"] = _parse_number(km_match.group(1))
-    year_match = YEAR_PATTERN.search(specs_text)
-    if year_match:
-        parsed["year"] = int(year_match.group(1))
-
-    location_match = re.search(r'class="ui-vip-location"[^>]*>(.*?)</', html, re.IGNORECASE | re.DOTALL)
-    if location_match:
-        city, state = _extract_city_state(unescape(location_match.group(1)).strip())
-        if city:
-            parsed["city"] = city
-        if state:
-            parsed["state"] = state
-
-    seller_match = re.search(r'data-testid="seller-type"[^>]*>(.*?)</', html, re.IGNORECASE | re.DOTALL)
-    if seller_match:
-        parsed["seller_type"] = unescape(seller_match.group(1)).strip()
-
-    parsed["photos"] = _extract_photos(html)
-    parsed["seller_feedback"] = _extract_seller_feedback(html)
-
-    canonical_match = re.search(r'rel="canonical"[^>]+href="([^"]+)"', html, re.IGNORECASE)
-    if canonical_match:
-        parsed["url"] = unescape(canonical_match.group(1))
-    elif url:
-        parsed["url"] = url
-
-    if parsed.get("title"):
-        parts = parsed["title"].split()
-        if parts:
-            parsed["brand"] = parts[0]
-            remaining = " ".join(parts[1:])
-            remaining = YEAR_PATTERN.sub("", remaining).strip()
-            if remaining:
-                parsed["model"] = remaining
-
-    if not parsed.get("id") and parsed.get("url"):
-        match = LISTING_ID_PATTERN.search(parsed["url"])
-        if match:
-            parsed["id"] = match.group(0)
-
-    return parsed
+logger = logging.getLogger(__name__)
 
 
 class MercadoLivreConnector(BaseConnector):
     name = "mercado_livre"
+    base_url = "https://api.mercadolibre.com"
 
-    def __init__(self, query: str, session: Optional[httpx.Client] = None, base_url: Optional[str] = None, limit: int = 30) -> None:
-        self.query = query
+    def __init__(self, region_key: str = "", query_text: str = "carros", limit: int = 20) -> None:
+        self.region_key = region_key
+        self.query_text = query_text
         self.limit = limit
-        self.session = session or httpx.Client()
-        self.base_url = base_url or self._build_search_url()
-
-    def _build_search_url(self) -> str:
-        query_part = self.query.replace(" ", "-") if self.query else ""
-        return f"https://carros.mercadolivre.com.br/{query_part}".rstrip("/") + "/search"
 
     def fetch_listings(self) -> Iterable[Mapping]:
-        url = self.base_url
-        fetched = 0
-        while url and fetched < self.limit:
-            response = self.session.get(url, timeout=15)
-            response.raise_for_status()
-            urls, next_url = parse_search_page(response.text)
-            for listing_url in urls:
-                if fetched >= self.limit:
-                    break
-                detail_response = self.session.get(listing_url, timeout=15)
-                detail_response.raise_for_status()
-                parsed = parse_listing({"html": detail_response.text, "url": listing_url})
-                yield self.normalize_fields(parsed)
-                fetched += 1
-            url = next_url
+        params = {"q": self.query_text, "limit": self.limit}
+        if self.region_key:
+            params["state"] = self.region_key
 
-    def parse_listing(self, payload: Mapping) -> Mapping:
-        return parse_listing(payload)
+        with httpx.Client(timeout=10) as client:
+            response = client.get(f"{self.base_url}/sites/MLB/search", params=params)
+            response.raise_for_status()
+            results = response.json().get("results", [])
+
+            for result in results:
+                try:
+                    yield self.parse_listing(result, client=client)
+                except Exception:
+                    logger.exception("Failed to parse Mercado Livre listing %s", result.get("id"))
+
+    def parse_listing(self, payload: Mapping, client: Optional[httpx.Client] = None) -> Mapping:
+        item_id = payload.get("id")
+        if not item_id:
+            raise ValueError("Missing listing id")
+
+        created_client = False
+        if client is None:
+            client = httpx.Client(timeout=10)
+            created_client = True
+
+        try:
+            item_data = self._fetch_json(client, f"/items/{item_id}")
+            seller_id = item_data.get("seller_id")
+            seller_data = self._fetch_seller_data(client, seller_id) if seller_id else {}
+        finally:
+            if created_client:
+                client.close()
+
+        pictures = item_data.get("pictures") or []
+        attributes = item_data.get("attributes") or []
+        attributes_map = {attr.get("id"): attr.get("value_name") for attr in attributes}
+
+        price = item_data.get("price") or payload.get("price")
+        brand = attributes_map.get("BRAND")
+        model = attributes_map.get("MODEL")
+        year = attributes_map.get("VEHICLE_YEAR") or attributes_map.get("YEAR")
+        mileage = attributes_map.get("KILOMETERS") or attributes_map.get("MILEAGE")
+
+        return {
+            "id": item_id,
+            "title": item_data.get("title") or payload.get("title"),
+            "brand": brand,
+            "model": model,
+            "year": int(year) if year else None,
+            "mileage_km": int(mileage) if mileage else None,
+            "price": price,
+            "city": (item_data.get("seller_address") or {}).get("city", {}).get("name"),
+            "state": (item_data.get("seller_address") or {}).get("state", {}).get("id"),
+            "seller_type": "dealer" if "car_dealer" in payload.get("tags", []) else "private",
+            "photos": [pic.get("secure_url") or pic.get("url") for pic in pictures if pic.get("url")],
+            "url": item_data.get("permalink") or payload.get("permalink"),
+            "external_id": item_id,
+            "seller_id": seller_id,
+            "seller_reputation": self._build_seller_reputation(seller_data),
+        }
 
     def normalize_fields(self, parsed: Mapping) -> Mapping:
         return {
-            "external_id": parsed.get("id"),
+            "external_id": parsed.get("external_id") or parsed.get("id"),
             "brand": parsed.get("brand"),
             "model": parsed.get("model"),
+            "trim": parsed.get("trim"),
             "year": parsed.get("year"),
             "mileage_km": parsed.get("mileage_km"),
             "price": parsed.get("price"),
             "city": parsed.get("city"),
             "state": parsed.get("state"),
-            "photos": parsed.get("photos", []),
             "seller_type": parsed.get("seller_type"),
+            "photos": parsed.get("photos", []),
             "url": parsed.get("url"),
-            "seller_feedback": parsed.get("seller_feedback", {}),
+            "seller_id": parsed.get("seller_id"),
+            "seller_reputation": parsed.get("seller_reputation"),
+        }
+
+    def _fetch_json(self, client: httpx.Client, path: str) -> Mapping:
+        response = client.get(f"{self.base_url}{path}")
+        response.raise_for_status()
+        return response.json()
+
+    def _fetch_seller_data(self, client: httpx.Client, seller_id: Optional[str]) -> Mapping:
+        if not seller_id:
+            return {}
+        try:
+            return self._fetch_json(client, f"/users/{seller_id}")
+        except httpx.HTTPError:
+            logger.exception("Failed to fetch seller data for %s", seller_id)
+            return {}
+
+    def _build_seller_reputation(self, seller_data: Mapping) -> Mapping:
+        rep = seller_data.get("seller_reputation", {}) if seller_data else {}
+        metrics = rep.get("metrics", {}) if isinstance(rep, Mapping) else {}
+        transactions = rep.get("transactions", {}) if isinstance(rep, Mapping) else {}
+        ratings = transactions.get("ratings", {}) if isinstance(transactions, Mapping) else {}
+
+        return {
+            "level_id": rep.get("level_id") if isinstance(rep, Mapping) else None,
+            "power_seller_status": rep.get("power_seller_status") if isinstance(rep, Mapping) else None,
+            "cancellation_rate": (metrics.get("cancellations") or {}).get("rate") if isinstance(metrics, Mapping) else None,
+            "claim_rate": (metrics.get("claims") or {}).get("rate") if isinstance(metrics, Mapping) else None,
+            "negative_rating": ratings.get("negative") if isinstance(ratings, Mapping) else None,
+            "neutral_rating": ratings.get("neutral") if isinstance(ratings, Mapping) else None,
+            "positive_rating": ratings.get("positive") if isinstance(ratings, Mapping) else None,
+            "completed_sales": (transactions.get("completed") if isinstance(transactions, Mapping) else None),
+            "total_sales": (transactions.get("total") if isinstance(transactions, Mapping) else None),
+            "canceled_sales": (transactions.get("canceled") if isinstance(transactions, Mapping) else None),
         }

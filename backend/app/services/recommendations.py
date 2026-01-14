@@ -1,12 +1,12 @@
 import uuid
 from typing import Dict, Optional
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.listing import NormalizedListing
 from app.schemas.listing import AxisBotReply
 from .ai_provider import AIProvider, MockProvider
+from .listing_selection import select_cheapest_with_reputation
 from .pricing import compute_regional_market_stats, detect_opportunity
 from .trust import TrustSignals, trust_badge
 
@@ -57,5 +57,4 @@ class AxisBotService:
         )
 
     def _pick_listing(self, db: Session) -> Optional[NormalizedListing]:
-        stmt = select(NormalizedListing).limit(1)
-        return db.execute(stmt).scalars().first()
+        return select_cheapest_with_reputation(db)
