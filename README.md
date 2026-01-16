@@ -26,4 +26,4 @@ curl -X POST http://localhost:8000/v1/search -H "Content-Type: application/json"
 - **Connectors** framework with safe example stub.
 - **Axis Bot** service orchestrating AI provider and selecting a single recommendation.
 
-See `docs/architecture.md`, `docs/api.md`, and `docs/runbook.md` for details.
+See `docs/architecture.md`, `docs/api.md`, `docs/lovable-integration.md`, and `docs/runbook.md` for details.
